@@ -2,16 +2,72 @@
 
 [Back to README](../README.md)
 
-Installation details, shell integration, sandbox boundaries, and development
-checks live here. For the first install and launch, start with the README.
+For agents installing or configuring nonocode on a user's machine, follow the
+[setup workflow](#agent-setup-workflow). The remaining sections are reference;
+[development checks](#development-checks) are for changing this repository, not
+a prerequisite for an end-user installation.
 
+- [Agent setup workflow](#agent-setup-workflow)
 - [Layout](#layout)
 - [Installation](#installation)
+- [Configuration](#configuration)
 - [Running nonocode](#running-nonocode)
 - [Sandbox boundaries](#sandbox-boundaries)
 - [Allowing extra paths](#allowing-extra-paths)
 - [Sandbox Awareness](#sandbox-awareness)
 - [Verification](#verification)
+
+## Agent setup workflow
+
+Installation changes user-level binaries, shell configuration, and possibly
+system packages. Work within your current permissions. If you are already
+sandboxed, use `question` to give the user the exact blocked command, working
+directory, and effects to perform outside the sandbox; wait for their result.
+Use a normal response if `question` is unavailable. An installation request is
+not permission to escape the current sandbox or weaken its protections.
+
+1. **Preflight.** Identify the OS and architecture (`uname -s`, `uname -m`),
+   login shell (`$SHELL`), any `ZDOTDIR`/XDG overrides, and the user's intended
+   project directory. Check OpenCode's actual `--version` and `--help`, preferring
+   `~/.opencode/bin/opencode` over the executable on `PATH`, as the installer
+   does. Confirm V2 supports `--standalone` and `--auto`, and meet the
+   [plugin's minimum version](#installation) if installing it. The installer
+   checks OpenCode's presence, not its version. Check for an existing installed
+   profile and shell integration before proposing changes. Proceed only with
+   a supported host and a compatible OpenCode executable; if OpenCode is
+   missing, follow its [V2 installation docs](https://opencode.ai/v2/docs/)
+   before continuing.
+2. **Agree on choices.** Resolve the three [installer choices](#what-the-installer-asks),
+   the target shell(s), and any package-manager/`sudo` work with the user. On
+   macOS, disclose experimental enforcement; on WSL2, prefer a project in the
+   Linux filesystem. Use `--non-interactive` only when the user accepts all its
+   defaults. There are no installer flags for individual yes/no choices; use a
+   real terminal for different answers. Piping answers to stdin is unreliable
+   because a piped installer reads answers from `/dev/tty`.
+3. **Install.** Run one of the [installation commands](#installation) as the
+   regular user. Prefer the installer over recreating its shell block or
+   manually registering the plugin. If it exits nonzero, inspect the error and
+   any completed changes: installation is not transactional, so a launcher or
+   plugin may already have been installed. Continue after the cause is resolved
+   and its final sandboxed version check succeeds.
+4. **Configure.** Use the [installed configuration map](#configuration), keep
+   existing settings, and add only user-approved [extra paths](#allowing-extra-paths).
+   Ensure `~/.local/bin` is on `PATH`. Keep the same XDG environment during
+   installation and normal launches so both use the same profile. Configuration
+   is ready when the installed JSON parses and the agreed grants and shell
+   choices are present, not when the repository examples have been edited.
+5. **Activate.** Have the user open a new target shell or reload its selected
+   config. Sourcing a file in an agent's child shell cannot update the user's
+   existing terminal. If provider authentication is missing, have the user run
+   `opencode auth login` outside the sandbox; keep credentials out of chat and
+   tracked files. Close and relaunch sandboxed sessions after profile or plugin
+   changes; nonocode uses a private server, so a shared-service restart is not
+   needed for this setup.
+6. **Verify and hand back.** Complete [installation verification](#installation-verification)
+   from the intended project. Report the resolved binaries/versions, installed
+   profile path, changed shell files, optional choices, extra grants, and actual
+   check results. Name pending user steps explicitly; distinguish an installed
+   launcher from a working authenticated session and from tested OS enforcement.
 
 ## Layout
 
@@ -22,11 +78,12 @@ published npm package instead.
 | Path | What it is |
 | ---------------------------------------------------- | ------------------------------------------------------------------------------------------- |
 | `install.sh`                                         | Installer: requires OpenCode, installs nono and nonocode; works from `curl \| bash` or a local checkout. |
-| `launcher.py`                                        | Implementation of `nonocode`: derives a nono profile per project, then execs OpenCode inside it. Resolves `nono`/`opencode` from PATH with known fallbacks. |
+| `launcher.py`                                        | Implementation copied to `~/.local/bin/nonocode`: derives a nono profile per launch and runs OpenCode inside it. |
 | `config/opencode-dev.linux.json`                     | Default Linux/WSL2 profile. Installed as `~/.config/nono/opencode-dev.json` only if absent. |
 | `config/opencode-dev.macos.json`                     | Experimental macOS profile, installed under the same name. |
 | `sandbox-awareness/index.js`                         | Local OpenCode plugin: when `OPENCODE_SANDBOX_MODE=sandboxed` is set, appends sandbox guidance to the system prompt and tells the agent to request manual help via `question`. |
 | `sandbox-awareness/tui.js`                           | TUI entrypoint: shows `(sandboxed)` next to the working directory in the prompt footer and in the home footer, only when the sandbox marker is set. |
+| `sandbox-awareness/package.json`, `sandbox-awareness/index.test.js` | Published plugin metadata, compatibility requirements, native Node syntax checks and hook tests; no build step. |
 | `test_launcher.py`                                   | Unit tests plus a real nono enforcement test. |
 | `test_install.py`                                    | Installer choices, repeat installs and Bash/Zsh routing in a throwaway home with stub dependencies; interactive tests require pseudo-terminals. |
 | `probe_sandbox_awareness.py`                         | Boots an isolated server with a loopback provider and asserts the plugin injects the guidance only in sandboxed mode. |
@@ -67,6 +124,11 @@ Or from the repository root of a local checkout:
 ```sh
 bash install.sh
 ```
+
+Local-checkout detection uses the **current working directory**, not the
+script's location: both `launcher.py` and the selected `config/` profile must
+be present there. Running `bash /path/to/install.sh` from another directory
+can download the published payload instead of installing that checkout.
 
 The installer:
 
@@ -145,6 +207,52 @@ sudo dnf copr enable always-further/nono
 sudo dnf install nono-cli
 ```
 
+## Configuration
+
+Repository files are installation inputs; the files below control an installed
+machine. nonocode has one user-level profile, not a separate settings file per
+project. OpenCode's own project configuration remains independent.
+
+| Installed location | Purpose |
+| --- | --- |
+| `~/.local/bin/nonocode` | Executable copy of `launcher.py`; rerunning the installer replaces it. |
+| `${XDG_CONFIG_HOME:-$HOME/.config}/nono/opencode-dev.json` | Strict JSON sandbox settings: required `read`, `write`, `exclude` arrays and optional `read_exceptions`. See [extra paths](#allowing-extra-paths) for their meanings. |
+| `~/.bashrc`, `${ZDOTDIR:-$HOME}/.zshrc` | Selected shell's managed integration block; backup and repeat-install behavior are described under [installer choices](#what-the-installer-asks). |
+| `${XDG_CONFIG_HOME:-$HOME/.config}/opencode/opencode.json(c)` | OpenCode's global server settings, including providers, permissions and server plugins. Preserve unrelated configuration. |
+| `${XDG_CONFIG_HOME:-$HOME/.config}/opencode/cli.json` | OpenCode's global terminal settings and CLI plugins. Let `opencode plugin add` handle package registration rather than guessing which file to edit. |
+
+Use the [V2 configuration guide](https://opencode.ai/v2/docs/config) and
+[CLI settings reference](https://opencode.ai/v2/docs/cli/config) for OpenCode
+settings; their JSON/JSONC configuration is not the nonocode profile format.
+Existing `OPENCODE_CONFIG_DIR` or other OpenCode path overrides also need review:
+nonocode inherits them, but they do not automatically add filesystem grants.
+An overridden runtime directory outside existing grants may need a narrow
+`write` entry. Changing `OPENCODE_CONFIG_DIR` does not relocate nonocode's profile.
+
+Profile paths support `~` and the literal `$HOME`, `$XDG_CONFIG_HOME`,
+`$XDG_CACHE_HOME`, `$XDG_DATA_HOME`, `$XDG_STATE_HOME`, and `$TMPDIR` placeholders.
+Use that `$NAME` form, not `${NAME}` or arbitrary shell expressions. XDG defaults
+are `~/.config`, `~/.cache`, `~/.local/share`, and `~/.local/state`, respectively.
+Paths are resolved to their real locations, so a symlink is not an extra grant.
+The launcher creates missing `write` directories before entering the sandbox;
+existing device entries are left as devices. Missing read paths are skipped
+until a subsequent launch where they exist. `exclude` also supports glob
+patterns, expanded at launch.
+
+The installer only warns if `~/.local/bin` is missing from `PATH`; it does not
+add it. In Bash or Zsh, add this to the appropriate user-owned startup file if
+needed, before the managed integration block:
+
+```sh
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+The shell wrapper and launcher prefer `~/.opencode/bin/opencode` to `PATH`;
+check that binary when multiple OpenCode versions are installed. nono is found
+on `PATH`, with `/usr/bin/nono` as a fallback. There is no Fish integration:
+Fish users can put `~/.local/bin` on their shell's path and invoke `nonocode`
+directly rather than copying the Bash/Zsh function.
+
 ## Running nonocode
 
 ```sh
@@ -157,9 +265,12 @@ outside a small allow-list, so it cannot be turned into a server or pointed at a
 directory outside the project. The marker is set only in the child environment;
 the shell never exports it.
 
-Each launch uses the current project directory and runs OpenCode with
-`--standalone --auto`: a private server with automatic approval. Supported
-arguments are:
+Each launch uses the resolved **current working directory**, not an automatically
+detected Git root, and runs OpenCode with `--standalone --auto`: a private server
+with automatic approval of permissions that are not explicitly denied. `cd` to
+the intended project root first; launching from a subdirectory adds no grant for
+its parent or siblings, though other profile grants still apply. Existing
+OpenCode denies still apply. Supported arguments are:
 
 - `--continue` / `-c`
 - `--session` / `-s`, followed by a session ID
@@ -248,6 +359,14 @@ Reload your shell configuration with `source ~/.bashrc` or
   bypass the sandbox, use `opencode --no-sandbox` or invoke
   `~/.opencode/bin/opencode` directly.
 
+Here, "project" means any directory other than those two exact shell paths;
+the wrapper does not inspect Git metadata. `/tmp/my-project` is sandboxed, but
+bare `opencode` in `/tmp` is not. The exception does not expand to `$TMPDIR` or
+symlink spellings of these paths. `--no-sandbox` belongs to this shell function,
+not to `nonocode` or the OpenCode executable. Other shells, scripts, IDEs, and
+direct executable invocations do not inherit the function's routing; use
+`nonocode` explicitly wherever sandboxing is required.
+
 ## Sandbox boundaries
 
 The launcher reads `~/.config/nono/opencode-dev.json`, or the equivalent under
@@ -278,6 +397,19 @@ native Mac smoke test before it can be considered verified.
 nono profiles are stored temporarily under that directory's `opencode/` folder.
 
 Network access is allowed. This is a filesystem boundary, not network isolation.
+
+The boundary applies to the launched OpenCode process and its local children,
+not already-running services or remote MCP tools. Network requests can still
+change external systems or send readable data elsewhere. The launcher inherits
+the environment, including exported credentials; it strips `NONO_*` variables
+but does not sanitize secrets from other variables. Files allowed for reading,
+including project `.env` files, are not made confidential by this sandbox.
+
+Writable grants permit deletion and modification of existing files, including
+project files and OpenCode's own configuration/state. nonocode runs nono with
+`--no-rollback`; it does not provide automatic recovery. Keep normal backups
+and version control. This setup limits accidental filesystem damage, not a
+deliberate escape attempt or actions deliberately run outside the sandbox.
 
 Denied: nono's own state (`$HOME/.nono`, `$XDG_STATE_HOME/nono`,
 `$XDG_CONFIG_HOME/nono`) and the exclusions in `opencode-dev.json` (`~/.ssh`,
@@ -376,7 +508,8 @@ installer already adds this exception unless you decline it.
 
 Adding a path to `write` does **not** override `exclude`. Keep credential and
 shell-config protections in place; don't grant all of `$HOME` or `/` to fix one
-tool. nono's own state remains protected, including from `read_exceptions`.
+tool. The launcher protects `$HOME/.nono` and `$XDG_STATE_HOME/nono` even from
+`read_exceptions`.
 
 ### 4. Start a new sandboxed session
 
@@ -414,7 +547,56 @@ sandbox. Consult its own documentation for setup and compatibility.
 
 ## Verification
 
-Run these checks from the repository root:
+### Installation verification
+
+Use the user's normal environment and an intended project directory, not `/`
+or `$HOME`. These checks do not require a repository checkout:
+
+```sh
+command -v nonocode
+python3 -m json.tool "${XDG_CONFIG_HOME:-$HOME/.config}/nono/opencode-dev.json" >/dev/null
+nonocode --version
+```
+
+- `command -v` should resolve the installed launcher, the JSON check should
+  succeed, and `nonocode --version` should exit zero with the expected OpenCode
+  version. The installer's own version check runs from `/tmp`; repeat it from
+  the real project to catch project-specific failures. With shell integration,
+  `opencode --version` bypasses nonocode and is **not** a sandbox check.
+- In a newly opened selected shell, `type opencode` should show the function if
+  integration was selected. Launch bare `opencode` from the project to exercise
+  routing, or `nonocode` if integration was declined. A successful reload in a
+  child shell alone does not verify the user's terminal.
+- If Sandbox Awareness was selected, `opencode plugin list` should include
+  `@glaicer/supercode-sandbox-awareness`. A fresh sandboxed TUI should show its
+  `(sandboxed)` indicator. Package presence and the environment marker alone do
+  not prove that OS filesystem restrictions are enforced.
+- Have the user send a short prompt such as "Reply OK without using tools" to
+  confirm provider access. A version check cannot verify authentication or
+  model requests. If sign-in or the TUI check is still pending, report that
+  instead of calling the setup fully verified.
+- For OS-enforcement evidence from a checkout, the targeted test is
+  `python3 -m unittest test_launcher.LauncherTests.test_filesystem_enforcement_and_child_inheritance -v`.
+  It checks a shipped profile with dummy files, **not the user's installed
+  custom profile**. Run outside an existing sandbox that blocks its temporary
+  home or pseudo-terminals. Report enforcement as untested if it was not run;
+  keep real credentials and personal files out of smoke tests.
+
+### Failure triage
+
+| Symptom | Next action |
+| --- | --- |
+| `nonocode` not found, or `opencode` still runs directly | Check `PATH`, the chosen rc file and the user's newly opened shell; see [configuration](#configuration). |
+| Landlock unavailable or nono cannot apply the sandbox | Resolve host/kernel support outside the sandbox. An unreadable or missing `/sys/kernel/security/lsm` is not proof of support; the installer only warns when it can read a list without Landlock. Keep enforcement unverified until a real launch succeeds. |
+| Invalid JSON or missing profile | Check the installed profile under the current `XDG_CONFIG_HOME`; preserve custom settings rather than replacing them with an example. |
+| Unsupported argument or refused working directory | `cd` to the project and use the [supported launcher arguments](#running-nonocode). Keep unsandboxed execution an explicit user choice. |
+| Permission denied by a tool | Separate sandbox denial from Unix permissions and OpenCode denies; for a needed filesystem grant, follow [extra paths](#allowing-extra-paths) outside the sandbox and relaunch. |
+| SSH host verification or authentication failure | `known_hosts` access only supplies saved host identities. Let the user manage host trust and credentials outside the sandbox. |
+| Plugin missing, duplicated, or no indicator | Check OpenCode compatibility, the selected plugin choice, [legacy copies](#what-the-installer-asks), and a fresh sandboxed launch before editing unrelated config. |
+
+### Development checks
+
+For repository changes, run the relevant checks from the repository root:
 
 ```sh
 bash -n install.sh
@@ -430,6 +612,14 @@ sandbox that prevents pseudo-terminal allocation.
 The launcher's filesystem-enforcement test reads a repository profile and uses
 a temporary home with dummy shell settings, not your installed profile or real
 shell files. It runs the real nono binary to check enforcement.
+
+For Sandbox Awareness source changes, also run its declared checks (Node.js
+24 or newer; no dependency install or build is needed):
+
+```sh
+npm --prefix sandbox-awareness run check
+npm --prefix sandbox-awareness test
+```
 
 ### Runtime and installation probes
 
