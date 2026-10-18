@@ -1,0 +1,38 @@
+{
+  "name": "@glaicer/supercode-sandbox-awareness",
+  "version": "1.0.0",
+  "description": "Sandbox guidance for OpenCode agents and a sandboxed status indicator in the terminal UI.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Dmitrii Aronov <aronov.mml@gmail.com>",
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "tui-plugin",
+    "sandbox",
+    "nonocode"
+  ],
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./server": "./index.js",
+    "./tui": "./tui.js"
+  },
+  "files": [
+    "index.js",
+    "tui.js"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "scripts": {
+    "check": "node --check index.js && node --check tui.js",
+    "test": "node --test",
+    "prepack": "npm run check && npm test"
+  },
+  "engines": {
+    "node": ">=24",
+    "opencode": ">=2.0.28 <3"
+  }
+}
