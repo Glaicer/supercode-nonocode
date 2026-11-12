@@ -71,6 +71,39 @@ def split_grants(path, excluded):
     return grants
 
 
+def linked_worktree_common_dir(cwd):
+    git = shutil.which("git")
+    if not git:
+        return None
+    result = subprocess.run(
+        [
+            git,
+            "-C",
+            str(cwd),
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-dir",
+            "--git-common-dir",
+            "--show-toplevel",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    lines = result.stdout.splitlines()
+    if result.returncode != 0 or len(lines) != 3:
+        return None
+    git_dir, common, toplevel = (Path(line).resolve() for line in lines)
+    # why: cwd/.git is agent-writable, so trust only a worktree the main repository registered back to cwd
+    if git_dir.parent != common / "worktrees":
+        return None
+    try:
+        registered = (git_dir / (git_dir / "gitdir").read_text().strip()).resolve()
+    except OSError:
+        return None
+    return common if registered == toplevel / ".git" else None
+
+
 def make_profile(settings, cwd):
     protected = [expand("$HOME/.nono"), expand("$XDG_STATE_HOME/nono")]
     excluded = protected[:]
@@ -89,6 +122,10 @@ def make_profile(settings, cwd):
     for value in settings.get("read_exceptions", []):
         read.extend(split_grants(expand(value), protected))
     writable = [cwd, *(expand(value) for value in settings["write"])]
+    common = linked_worktree_common_dir(cwd)
+    if common:
+        # why: a linked worktree keeps its index, objects and refs in the main repository's .git
+        writable.append(common)
     allow = []
     for path in writable:
         if any(within(path, item) for item in protected):

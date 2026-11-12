@@ -1,5 +1,6 @@
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -223,6 +224,101 @@ print("PASS: project, tmp, read-only outside, excluded reads, denied shell confi
             )
             self.assertEqual((outside / "existing").read_text(), "original")
             self.assertFalse((outside / "new").exists())
+
+    def test_linked_worktree_commits_inside_the_sandbox(self):
+        platform = "macos" if sys.platform == "darwin" else "linux"
+        settings = json.loads(
+            (
+                Path(__file__).resolve().parent
+                / "config"
+                / f"opencode-dev.{platform}.json"
+            ).read_text()
+        )
+        git = [
+            "git",
+            "-c",
+            "user.name=probe",
+            "-c",
+            "user.email=probe@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+        ]
+        with tempfile.TemporaryDirectory(
+            prefix=".nono-probe-", dir=Path.home()
+        ) as directory:
+            main = Path(directory) / "main"
+            worktree = Path(directory) / "worktree"
+            subprocess.run([*git, "init", "-q", str(main)], check=True)
+            subprocess.run(
+                [*git, "-C", str(main), "commit", "-q", "--allow-empty", "-m", "base"],
+                check=True,
+            )
+            subprocess.run(
+                [
+                    *git,
+                    "-C",
+                    str(main),
+                    "worktree",
+                    "add",
+                    "-q",
+                    "-b",
+                    "feature",
+                    str(worktree),
+                ],
+                check=True,
+            )
+            (worktree / "change").write_text("change")
+            script = (
+                " ".join(git)
+                + " add change && "
+                + " ".join(git)
+                + " commit -q -m change"
+            )
+            self.assertEqual(
+                run_in_sandbox(settings, ["sh", "-c", script], cwd=worktree), 0
+            )
+            log = subprocess.run(
+                ["git", "-C", str(main), "log", "-1", "--format=%s", "feature"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(log.stdout.strip(), "change")
+
+    def test_forged_git_file_does_not_unlock_another_repository(self):
+        git = ["git", "-c", "user.name=probe", "-c", "user.email=probe@example.invalid"]
+        with tempfile.TemporaryDirectory(dir=self.temporary_root) as directory:
+            root = Path(directory).resolve()
+            victim = root / "victim"
+            project = root / "project"
+            project.mkdir()
+            subprocess.run([*git, "init", "-q", str(victim)], check=True)
+            subprocess.run(
+                [
+                    *git,
+                    "-C",
+                    str(victim),
+                    "commit",
+                    "-q",
+                    "--allow-empty",
+                    "-m",
+                    "base",
+                ],
+                check=True,
+            )
+            subprocess.run(
+                [*git, "-C", str(victim), "worktree", "add", "-q", str(root / "real")],
+                check=True,
+            )
+            fake = root / "fake"
+            subprocess.run(["git", "init", "-q", "--bare", str(fake)], check=True)
+            (fake / "commondir").write_text(str(victim / ".git"))
+            settings = {"read": [], "write": [], "exclude": []}
+            for target in [victim / ".git", victim / ".git/worktrees/real", fake]:
+                with self.subTest(target=target):
+                    (project / ".git").write_text(f"gitdir: {target}\n")
+                    allow = make_profile(settings, project)["filesystem"]["allow"]
+                    self.assertEqual(allow, [str(project)])
 
     def test_unsafe_cwd(self):
         settings = {"read": [], "write": [], "exclude": []}
