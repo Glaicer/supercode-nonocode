@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from launcher import (
     expand,
+    main,
     make_profile,
     run_in_sandbox,
     split_grants,
@@ -100,7 +101,9 @@ class LauncherTests(unittest.TestCase):
             self.assertEqual(profile_path.parent.parent, root / "opencode")
 
     def test_arguments(self):
-        validate_args(["--continue", "--session", "session-id", "--prompt=hello"])
+        validate_args(
+            ["--continue", "--wizard", "--session", "session-id", "--prompt=hello"]
+        )
         for args in [
             ["--server", "http://localhost:4096"],
             ["run"],
@@ -109,6 +112,24 @@ class LauncherTests(unittest.TestCase):
         ]:
             with self.assertRaises(ValueError):
                 validate_args(args)
+
+    def test_flags_nonocode_always_passes_are_accepted_once(self):
+        with tempfile.TemporaryDirectory(dir=self.temporary_root) as directory:
+            settings = Path(directory) / "nono/opencode-dev.json"
+            settings.parent.mkdir()
+            settings.write_text('{"read": [], "write": [], "exclude": []}')
+            argv = ["nonocode", "--standalone", "--auto", "-c"]
+            with (
+                patch.dict(os.environ, {"XDG_CONFIG_HOME": directory}),
+                patch("launcher.sys.argv", argv),
+                patch("launcher.opencode_bin", return_value="/fake/opencode"),
+                patch("launcher.run_in_sandbox", return_value=0) as run,
+            ):
+                self.assertEqual(main(), 0)
+            self.assertEqual(
+                run.call_args.args[1],
+                ["/fake/opencode", "--standalone", "--auto", "-c"],
+            )
 
     def test_excluded_ancestors_and_symlinks(self):
         with tempfile.TemporaryDirectory(dir=self.temporary_root) as directory:

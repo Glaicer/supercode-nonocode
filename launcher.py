@@ -170,7 +170,16 @@ def make_profile(settings, cwd):
 
 
 def validate_args(args):
-    switches = {"--continue", "-c", "--print-logs", "--help", "-h", "--version", "-v"}
+    switches = {
+        "--continue",
+        "-c",
+        "--print-logs",
+        "--wizard",
+        "--help",
+        "-h",
+        "--version",
+        "-v",
+    }
     values = {"--session", "-s", "--prompt", "--log-level"}
     index = 0
     while index < len(args):
@@ -222,7 +231,9 @@ def run_in_sandbox(settings, command, cwd=None, env=None):
 
 
 def main():
-    validate_args(sys.argv[1:])
+    launch_flags = ["--standalone", "--auto"]
+    args = [arg for arg in sys.argv[1:] if arg not in launch_flags]
+    validate_args(args)
     settings_path = expand("$XDG_CONFIG_HOME/nono/opencode-dev.json")
     settings = json.loads(settings_path.read_text())
     for value in settings["write"]:
@@ -232,12 +243,7 @@ def main():
             path.mkdir(parents=True, exist_ok=True)
     return run_in_sandbox(
         settings,
-        [
-            opencode_bin(),
-            "--standalone",
-            "--auto",
-            *sys.argv[1:],
-        ],
+        [opencode_bin(), *launch_flags, *args],
     )
 
 
