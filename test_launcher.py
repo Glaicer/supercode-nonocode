@@ -267,23 +267,24 @@ print("PASS: project, tmp, read-only outside, excluded reads, denied shell confi
                 ],
                 check=True,
             )
-            (worktree / "change").write_text("change")
-            script = (
-                " ".join(git)
-                + " add change && "
-                + " ".join(git)
-                + " commit -q -m change"
-            )
-            self.assertEqual(
-                run_in_sandbox(settings, ["sh", "-c", script], cwd=worktree), 0
-            )
-            log = subprocess.run(
-                ["git", "-C", str(main), "log", "-1", "--format=%s", "feature"],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-            self.assertEqual(log.stdout.strip(), "change")
+            for launch in [worktree, main]:
+                with self.subTest(launch=launch):
+                    command = " ".join([*git, "-C", str(worktree)])
+                    script = (
+                        f"echo {launch.name} > {worktree / launch.name} && "
+                        f"{command} add {launch.name} && "
+                        f"{command} commit -q -m {launch.name}"
+                    )
+                    self.assertEqual(
+                        run_in_sandbox(settings, ["sh", "-c", script], cwd=launch), 0
+                    )
+                    log = subprocess.run(
+                        ["git", "-C", str(main), "log", "-1", "--format=%s", "feature"],
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                    )
+                    self.assertEqual(log.stdout.strip(), launch.name)
 
     def test_forged_git_file_does_not_unlock_another_repository(self):
         git = ["git", "-c", "user.name=probe", "-c", "user.email=probe@example.invalid"]
@@ -319,6 +320,54 @@ print("PASS: project, tmp, read-only outside, excluded reads, denied shell confi
                     (project / ".git").write_text(f"gitdir: {target}\n")
                     allow = make_profile(settings, project)["filesystem"]["allow"]
                     self.assertEqual(allow, [str(project)])
+
+    def test_main_checkout_can_write_only_its_registered_worktrees(self):
+        git = ["git", "-c", "user.name=probe", "-c", "user.email=probe@example.invalid"]
+        with tempfile.TemporaryDirectory(dir=self.temporary_root) as directory:
+            root = Path(directory).resolve()
+            main = root / "main"
+            other = root / "other"
+            project = root / "project"
+            project.mkdir()
+            for repo in [main, other]:
+                subprocess.run([*git, "init", "-q", str(repo)], check=True)
+                subprocess.run(
+                    [
+                        *git,
+                        "-C",
+                        str(repo),
+                        "commit",
+                        "-q",
+                        "--allow-empty",
+                        "-m",
+                        "base",
+                    ],
+                    check=True,
+                )
+            for repo, worktree in [(main, "worktree"), (other, "foreign")]:
+                subprocess.run(
+                    [
+                        *git,
+                        "-C",
+                        str(repo),
+                        "worktree",
+                        "add",
+                        "-q",
+                        str(root / worktree),
+                    ],
+                    check=True,
+                )
+            settings = {"read": [], "write": [], "exclude": []}
+            forged = main / ".git/worktrees/forged"
+            forged.mkdir()
+            for target in [other, root / "foreign", project]:
+                with self.subTest(target=target):
+                    (forged / "gitdir").write_text(f"{target / '.git'}\n")
+                    allow = make_profile(settings, main)["filesystem"]["allow"]
+                    self.assertEqual(allow, [str(main), str(root / "worktree")])
+            (project / ".git").symlink_to(main / ".git")
+            allow = make_profile(settings, project)["filesystem"]["allow"]
+            self.assertEqual(allow, [str(project)])
 
     def test_unsafe_cwd(self):
         settings = {"read": [], "write": [], "exclude": []}
